@@ -2,11 +2,11 @@
 #
 # Build labeled news dataset from per-ticker Finnhub CSVs:
 # - Input: directory of CSVs with columns [ticker, published_utc, title, publisher, url]
-# - Output: single CSV with forward returns & labels for 1d/3d/7d horizons
+# - Output: single CSV with forward returns & labels for 1/3/7/10/20-day horizons
 
 import os
 import argparse
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -70,18 +70,23 @@ def fetch_daily_prices(ticker: str, start_date, end_date) -> pd.DataFrame:
 def label_block(block: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
     """
     For one ticker's headlines and its daily prices,
-    compute forward 1/3/7-day returns & ±1% labels.
+    compute forward returns & labels for 1/3/7/10/20-day horizons.
     """
+    horizons = [1, 3, 7, 10, 20]
+
     if prices.empty:
-        for col in ["ret_1d", "ret_3d", "ret_7d", "label_1d", "label_3d", "label_7d"]:
-            block[col] = np.nan
+        for h in horizons:
+            block[f"ret_{h}d"] = np.nan
+            block[f"label_{h}d"] = np.nan
+        block["label_10d_bin"] = np.nan
         return block
 
     dates = prices["date"].values
     close = prices["Close"].values
 
-    ret_1d, ret_3d, ret_7d = [], [], []
-    lab_1d, lab_3d, lab_7d = [], [], []
+    # Prepare containers
+    rets = {h: [] for h in horizons}
+    labs = {h: [] for h in horizons}
 
     def last_trading_index_on_or_before(ts):
         d = ts.date()
@@ -112,24 +117,25 @@ def label_block(block: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
     for ts in block["published_utc"]:
         j0 = last_trading_index_on_or_before(ts)
         if j0 is None:
-            ret_1d.append(np.nan); ret_3d.append(np.nan); ret_7d.append(np.nan)
-            lab_1d.append(np.nan); lab_3d.append(np.nan); lab_7d.append(np.nan)
+            for h in horizons:
+                rets[h].append(np.nan)
+                labs[h].append(np.nan)
             continue
 
-        r1, l1 = ret_and_label(j0, 1)
-        r3, l3 = ret_and_label(j0, 3)
-        r7, l7 = ret_and_label(j0, 7)
+        for h in horizons:
+            r, lbl = ret_and_label(j0, h)
+            rets[h].append(r)
+            labs[h].append(lbl)
 
-        ret_1d.append(r1); lab_1d.append(l1)
-        ret_3d.append(r3); lab_3d.append(l3)
-        ret_7d.append(r7); lab_7d.append(l7)
+    for h in horizons:
+        block[f"ret_{h}d"] = rets[h]
+        block[f"label_{h}d"] = labs[h]
 
-    block["ret_1d"] = ret_1d
-    block["ret_3d"] = ret_3d
-    block["ret_7d"] = ret_7d
-    block["label_1d"] = lab_1d
-    block["label_3d"] = lab_3d
-    block["label_7d"] = lab_7d
+    # Binary 10-day label: 1 if > +2%, else 0
+    ret_10 = block["ret_10d"]
+    block["label_10d_bin"] = np.where(ret_10 > 0.02, 1, 0)
+    block.loc[ret_10.isna(), "label_10d_bin"] = np.nan
+
     return block
 
 
@@ -185,7 +191,7 @@ def main():
         max_ts = df["published_utc"].max()
 
         start_date = (min_ts - pd.Timedelta(days=10)).date()
-        end_date = (max_ts + pd.Timedelta(days=10)).date()
+        end_date = (max_ts + pd.Timedelta(days=25)).date()
 
         print(f"\n[{i}/{len(files)}] {t}: headlines={len(df)}, price range {start_date} → {end_date}")
         prices = fetch_daily_prices(t, start_date, end_date)
@@ -199,13 +205,13 @@ def main():
     out = pd.concat(blocks, ignore_index=True)
     out = out.sort_values(["ticker", "published_utc"]).reset_index(drop=True)
 
-    # Drop rows where 3d label is nan (no future prices)
-    out = out.dropna(subset=["label_3d"])
+    # Drop rows where 10d label is nan (no future prices)
+    out = out.dropna(subset=["label_10d_bin"])
     out.to_csv(out_csv, index=False)
 
     print(f"\nSaved labeled dataset → {out_csv} (rows: {len(out)})")
-    print("Label distribution (3d):")
-    print(out["label_3d"].value_counts(dropna=False))
+    print("Label distribution (10d binary):")
+    print(out["label_10d_bin"].value_counts(dropna=False))
 
 
 if __name__ == "__main__":

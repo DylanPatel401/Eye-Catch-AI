@@ -147,6 +147,7 @@ def main():
 
     blocks = []
     for i, t in enumerate(tickers, 1):
+        time.sleep(3)
         block = df[df["ticker"] == t].copy().reset_index(drop=True)
         if block.empty:
             continue
