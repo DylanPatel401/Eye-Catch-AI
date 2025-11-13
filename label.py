@@ -28,11 +28,6 @@ print(f"Loaded {len(news)} headlines across {len(tickers)} tickers")
 
 # ========= 2. Price fetch helper (robust) =========
 def fetch_daily_prices(ticker: str, start_date, end_date):
-    """
-    Safe daily price download using yfinance.
-    Returns DataFrame with columns: date, Close.
-    If no data or missing fields → returns empty DataFrame.
-    """
     print(f"  yfinance download {ticker} {start_date} → {end_date}")
     df = yf.download(
         ticker,
@@ -42,52 +37,19 @@ def fetch_daily_prices(ticker: str, start_date, end_date):
         auto_adjust=True,
         progress=False,
         group_by="column",
-        multi_level_index=False,  # <-- THIS
+        multi_level_index=False,
     )
 
-    print(f"\n=== DEBUG {ticker} ===")
-    print("Columns:", df.columns.tolist())
-    print("Head:\n", df.head(), "\n")
-
-
-    # Completely empty → nothing to do
     if df is None or df.empty:
         print(f"  WARNING: yfinance returned no data for {ticker}")
         return pd.DataFrame(columns=["date", "Close"])
 
-    # Always reset index so we get a Date-like column
-    df = df.reset_index()
+    df = df.copy()
+    # index is Date
+    df["date"] = pd.to_datetime(df.index, errors="coerce").date
 
-    # Try to find the date column explicitly
-    date_col = None
-    for cand in ["Date", "date", "Datetime"]:
-        if cand in df.columns:
-            date_col = cand
-            break
-    if date_col is None:
-        print(f"  WARNING: no date-like column in yfinance output for {ticker}. cols={list(df.columns)}")
-        return pd.DataFrame(columns=["date", "Close"])
-
-    # Determine which column to treat as Close
-    close_col = None
-    if "Close" in df.columns:
-        close_col = "Close"
-    elif "Adj Close" in df.columns:
-        close_col = "Adj Close"
-    else:
-        # fallback: first numeric column
-        numeric_cols = [c for c in df.columns if np.issubdtype(df[c].dtype, np.number)]
-        if not numeric_cols:
-            print(f"  WARNING: no numeric price-like columns for {ticker}. cols={list(df.columns)}")
-            return pd.DataFrame(columns=["date", "Close"])
-        close_col = numeric_cols[0]
-        print(f"  INFO: using {close_col} as Close for {ticker}")
-
-    # Build the date column
-    df["date"] = pd.to_datetime(df[date_col], errors="coerce").dt.date
-
-    if "date" not in df.columns:
-        print(f"  WARNING: failed to create 'date' column for {ticker}")
+    if "Close" not in df.columns:
+        print(f"  WARNING: no 'Close' column for {ticker}. cols={list(df.columns)}")
         return pd.DataFrame(columns=["date", "Close"])
 
     df = df.dropna(subset=["date"])
@@ -96,13 +58,11 @@ def fetch_daily_prices(ticker: str, start_date, end_date):
         return pd.DataFrame(columns=["date", "Close"])
 
     out = (
-        df[["date", close_col]]
-        .rename(columns={close_col: "Close"})
+        df[["date", "Close"]]
         .drop_duplicates(subset=["date"])
         .sort_values("date")
         .reset_index(drop=True)
     )
-
     return out
 
 # ========= 3. Labeling helper =========
