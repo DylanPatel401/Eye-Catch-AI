@@ -1,5 +1,7 @@
+# pull_finnhub_news_resumable.py
 # pip install pandas requests python-dateutil
-import os, sys, time, argparse, json
+
+import os, sys, time, argparse
 from datetime import datetime, timedelta, timezone
 import requests
 import pandas as pd
@@ -10,41 +12,35 @@ if not FINNHUB_TOKEN:
         'ERROR: Set FINNHUB_TOKEN (PowerShell):  setx FINNHUB_TOKEN "your_key"  and reopen terminal.'
     )
 
-# === NEW ALPHA UNIVERSE (replaces old HIGH_CATALYST_30 mega-caps) ===
-# Small/mid-cap, headline- and insider-sensitive names
+# Legacy presets (you can keep or ignore)
 HIGH_CATALYST_40 = [
     # Biotech / pharma
     "VERA", "KRTX", "IONS", "EXAI", "RNA", "BEAM", "EDIT", "VERV", "ALLO", "ARQT",
-    "SRPT", "SAGE", "NVAX", "REGN",
-
-    # SaaS / cloud / software
-    "ASAN", "ESTC", "BILL", "DOCS", "PD", "FSLY", "TWOU", "PUBM", "SHOP", "ZI",
-
+    "SRPT", "SAGE", "NVAX", "REGN", "BMRN", "VRTX",
+    # SaaS / cloud
+    "ASAN", "ESTC", "BILL", "DOCS", "PD", "FSLY", "TWOU", "PUBM", "ZI", "TTD",
     # Clean energy / EV / solar
     "RUN", "SPWR", "BLNK", "CHPT", "PLUG", "BE", "ENVX", "MAXN",
-
-    # Fintech / consumer / growth
+    # Fintech / consumer
     "AFRM", "UPST", "SOFI", "BMBL", "ROKU", "CELH",
-
     # Space / speculative tech
     "ASTS", "RKLB", "ACHR", "JOBY",
 ]
 
-# Keep utilities only if you still want this alternate universe.
 UTILITIES_20 = [
     "NEE", "DUK", "D", "SO", "AEP", "EXC", "EIX", "PNW", "ED", "XEL",
     "CNP", "AEE", "PPL", "AES", "PEG", "NI", "CMS", "ETR", "FE", "LNT",
 ]
 
 KEYWORD_GROUPS = {
-    "partnership": ["partner", "partnership", "collaboration", "joint venture", "agreement", "alliance"],
-    "invests": ["invest", "investment", "funding", "stake"],
-    "acquisition": ["acquire", "acquisition", "merger", "buyout", "takeover"],
-    "contract": ["contract", "secures contract", "wins contract", "award", "awarded"],
-    "guidance": ["guidance", "raises guidance", "lowers guidance", "outlook"],
-    "lawsuit": ["lawsuit", "sues", "settlement", "probe", "investigation", "subpoena"],
-    "recalls": ["recall", "defect", "safety issue"],
-    "rating": ["upgrade", "downgrade", "initiated coverage"],
+    "partnership": ["partner","partnership","collaboration","joint venture","agreement","alliance"],
+    "invests": ["invest","investment","funding","stake"],
+    "acquisition": ["acquire","acquisition","merger","buyout","takeover"],
+    "contract": ["contract","secures contract","wins contract","award","awarded"],
+    "guidance": ["guidance","raises guidance","lowers guidance","outlook"],
+    "lawsuit": ["lawsuit","sues","settlement","probe","investigation","subpoena"],
+    "recalls": ["recall","defect","safety issue"],
+    "rating": ["upgrade","downgrade","initiated coverage"],
 }
 KEYWORDS = sorted({kw.lower() for v in KEYWORD_GROUPS.values() for kw in v})
 
@@ -73,57 +69,52 @@ def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
+def load_universe_from_file(path: str):
+    tickers = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            tickers.append(line.upper())
+    if not tickers:
+        raise SystemExit(f"Universe file {path} contained no tickers.")
+    return sorted(set(tickers))
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Finnhub news pull (resumable).")
-    p.add_argument(
-        "--universe",
-        choices=["high", "utilities"],
-        default="high",
-        help="Which preset ticker universe to use. 'high' = alpha small/mid-cap universe, 'utilities' = defensive names.",
-    )
-    p.add_argument(
-        "--from",
-        dest="from_date",
-        default=None,
-        help="YYYY-MM-DD (default: 365 days ago)",
-    )
-    p.add_argument(
-        "--to",
-        dest="to_date",
-        default=None,
-        help="YYYY-MM-DD (default: today UTC)",
-    )
-    p.add_argument(
-        "--outdir",
-        default="data/news_raw",
-        help="Output dir per-ticker CSVs.",
-    )
-    p.add_argument(
-        "--filter-keywords",
-        action="store_true",
-        help="Apply catalyst keyword filter.",
-    )
-    p.add_argument(
-        "--delay",
-        type=float,
-        default=0.0,
-        help="Seconds to sleep between tickers (rarely needed).",
-    )
+    p.add_argument("--universe", choices=["high", "utilities"], default="high",
+                   help="Which preset ticker universe to use (ignored if --universe-file is set).")
+    p.add_argument("--universe-file", default=None,
+                   help="Path to text file with one ticker per line. Overrides --universe presets if provided.")
+    p.add_argument("--from", dest="from_date", default=None,
+                   help="YYYY-MM-DD (default: 5 years ago)")
+    p.add_argument("--to", dest="to_date", default=None,
+                   help="YYYY-MM-DD (default: today UTC)")
+    p.add_argument("--outdir", default="data/news_alpha", help="Output dir per-ticker CSVs.")
+    p.add_argument("--filter-keywords", action="store_true",
+                   help="Apply catalyst keyword filter.")
+    p.add_argument("--delay", type=float, default=0.0,
+                   help="Seconds to sleep between tickers.")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
 
-    # Use the new universe by default
-    if args.universe == "high":
-        tickers = HIGH_CATALYST_40
+    # Universe selection
+    if args.universe_file:
+        tickers = load_universe_from_file(args.universe_file)
+        print(f"Loaded {len(tickers)} tickers from {args.universe_file}")
     else:
-        tickers = UTILITIES_20
+        tickers = HIGH_CATALYST_40 if args.universe == "high" else UTILITIES_20
 
     today = datetime.now(timezone.utc).date()
-    start = (today - timedelta(days=365)).isoformat() if not args.from_date else args.from_date
-    end = today.isoformat() if not args.to_date else args.to_date
+    default_start = today - timedelta(days=5*365)  # ~5 years
+
+    start = default_start.isoformat() if not args.from_date else args.from_date
+    end   = today.isoformat() if not args.to_date else args.to_date
 
     outdir = args.outdir
     ensure_dir(outdir)
@@ -153,25 +144,19 @@ def main():
                     continue
                 ts = int(it.get("datetime", 0))
                 dt = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-                rows.append(
-                    {
-                        "ticker": t,
-                        "published_utc": dt,
-                        "title": title,
-                        "publisher": it.get("source") or "",
-                        "url": it.get("url") or "",
-                    }
-                )
+                rows.append({
+                    "ticker": t,
+                    "published_utc": dt,
+                    "title": title,
+                    "publisher": it.get("source") or "",
+                    "url": it.get("url") or "",
+                })
                 kept += 1
 
             df = pd.DataFrame(rows)
             if not df.empty:
-                df.drop_duplicates(
-                    subset=["ticker", "title", "published_utc"], inplace=True
-                )
-                df.sort_values(
-                    ["ticker", "published_utc"], ascending=[True, False], inplace=True
-                )
+                df.drop_duplicates(subset=["ticker","title","published_utc"], inplace=True)
+                df.sort_values(["ticker","published_utc"], ascending=[True, False], inplace=True)
                 df.reset_index(drop=True, inplace=True)
             df.to_csv(out_path, index=False)
             print(f"   saved {kept} → {out_path}")
@@ -180,9 +165,7 @@ def main():
                 time.sleep(args.delay)
 
     except KeyboardInterrupt:
-        print(
-            "\nInterrupted. Progress preserved. Already-saved tickers won’t be re-fetched on next run."
-        )
+        print("\nInterrupted. Progress preserved. Already-saved tickers won’t be re-fetched on next run.")
     except requests.HTTPError as e:
         print(f"\nHTTP error: {e}. Progress preserved.")
     finally:

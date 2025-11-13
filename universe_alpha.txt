@@ -1,0 +1,77 @@
+# Biotech / pharma
+VERA
+KRTX
+IONS
+EXAI
+RNA
+BEAM
+EDIT
+VERV
+ALLO
+ARQT
+SRPT
+SAGE
+NVAX
+BMRN
+REGN
+VRTX
+IMVT
+APLS
+AZN
+ADMA
+
+# SaaS / cloud / software
+ASAN
+ESTC
+BILL
+DOCS
+PD
+FSLY
+TWOU
+PUBM
+ZI
+TTD
+LRN
+PATH
+MNDY
+ZS
+OKTA
+DT
+AYX
+NCNO
+
+# Clean energy / EV / solar / battery
+RUN
+SPWR
+BLNK
+CHPT
+PLUG
+BE
+ENVX
+MAXN
+SEDG
+ENPH
+SHLS
+
+# Fintech / consumer / growth
+AFRM
+UPST
+SOFI
+BMBL
+ROKU
+CELH
+MQ
+HOOD
+NU
+FOUR
+MELI   # biggish but catalyst-sensitive
+
+# Space / speculative tech
+ASTS
+RKLB
+ACHR
+JOBY
+SPCE
+PL
+LILM
+EVEX
