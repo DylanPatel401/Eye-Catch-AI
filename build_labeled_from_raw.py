@@ -1,218 +1,234 @@
 # build_labeled_from_raw.py
-#
-# Build labeled news dataset from per-ticker Finnhub CSVs:
-# - Input: directory of CSVs with columns [ticker, published_utc, title, publisher, url]
-# - Output: single CSV with forward returns & labels for 1/3/7/10/20-day horizons
+# Sector-neutral 10d/20d labeling with robust date handling
 
 import os
-import argparse
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-import numpy as np
 import pandas as pd
 import yfinance as yf
 
+# ------------- Sector mapping -------------
 
-def fetch_daily_prices(ticker: str, start_date, end_date) -> pd.DataFrame:
-    """
-    Fetch daily adjusted Close prices for [start_date, end_date].
-    Handles both flat and MultiIndex yfinance output.
-    Returns columns: date, Close
-    """
-    print(f"  yfinance {ticker} {start_date} → {end_date}")
-    prices = yf.download(
-        ticker,
-        start=start_date,
-        end=end_date + timedelta(days=1),  # end exclusive
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
-        group_by="column",
-    )
+SECTOR_MAP = {
+    # Semis / chips
+    "NVDA": "SMH", "AMD": "SMH", "MU": "SMH", "TSM": "SMH", "ASML": "SMH", "AVGO": "SMH",
+    "TXN": "SMH", "QCOM": "SMH", "INTC": "SMH", "AMAT": "SMH", "LRCX": "SMH", "KLAC": "SMH",
 
-    if prices is None or prices.empty:
-        print(f"  WARNING: no price data for {ticker}")
-        return pd.DataFrame(columns=["date", "Close"])
+    # General big tech
+    "AAPL": "XLK", "MSFT": "XLK", "GOOG": "XLK", "GOOGL": "XLK", "META": "XLK",
+    "ADBE": "XLK", "ORCL": "XLK", "CRM": "XLK", "SNOW": "XLK", "NET": "XLK",
+    "DDOG": "XLK", "MDB": "XLK", "PATH": "XLK", "PLTR": "XLK", "NOW": "XLK",
+    "TEAM": "XLK", "INTU": "XLK", "SQ": "XLK", "PYPL": "XLK",
 
-    prices = prices.copy()
+    # Financials
+    "JPM": "XLF", "GS": "XLF", "MS": "XLF", "C": "XLF", "BAC": "XLF", "WFC": "XLF",
+    "AXP": "XLF", "SCHW": "XLF", "AMTD": "XLF", "COIN": "XLF", "BLK": "XLF", "IVZ": "XLF",
 
-    # Handle both MultiIndex and flat columns
-    if isinstance(prices.columns, pd.MultiIndex):
-        level0 = prices.columns.get_level_values(0)
-        if "Close" not in level0:
-            print(f"  WARNING: no Close in MultiIndex for {ticker} (cols={list(prices.columns)})")
-            return pd.DataFrame(columns=["date", "Close"])
-        close_df = prices.xs("Close", axis=1, level=0)
-        close_series = close_df.iloc[:, 0]
+    # Consumer discretionary
+    "AMZN": "XLY", "TSLA": "XLY", "HD": "XLY", "LOW": "XLY", "MCD": "XLY", "SBUX": "XLY",
+    "DPZ": "XLY", "ETSY": "XLY", "EXPE": "XLY", "BKNG": "XLY", "TOL": "XLY",
+    "ROKU": "XLY", "NKE": "XLY", "CMG": "XLY",
+
+    # Consumer staples
+    "PEP": "XLP", "KO": "XLP", "PG": "XLP", "COST": "XLP", "WMT": "XLP",
+    "DLTR": "XLP", "DG": "XLP", "KHC": "XLP", "MDLZ": "XLP",
+
+    # Industrials
+    "BA": "XLI", "CAT": "XLI", "DE": "XLI", "GE": "XLI", "LMT": "XLI", "NOC": "XLI",
+    "RTX": "XLI", "LHX": "XLI", "ETN": "XLI", "PH": "XLI", "HON": "XLI", "GD": "XLI",
+    "TXT": "XLI", "PL": "XLI", "RKLB": "XLI",
+
+    # Utilities
+    "NEE": "XLU", "DUK": "XLU", "SO": "XLU", "AEP": "XLU", "EXC": "XLU", "XEL": "XLU",
+    "PEG": "XLU", "ED": "XLU",
+
+    # Materials
+    "LIN": "XLB", "FCX": "XLB", "NUE": "XLB", "DD": "XLB",
+
+    # Health care
+    "UNH": "XLV", "PFE": "XLV", "MRNA": "XLV", "REGN": "XLV", "VRTX": "XLV", "BMY": "XLV",
+    "GILD": "XLV", "LLY": "XLV", "ABBV": "XLV",
+
+    # Energy
+    "XOM": "XLE", "CVX": "XLE", "SLB": "XLE", "HAL": "XLE",
+
+    # Real estate
+    "AMT": "XLRE", "PLD": "XLRE", "EQIX": "XLRE",
+}
+
+DEFAULT_SECTOR = "SPY"
+
+
+# ------------- Helpers -------------
+
+def safe_download(symbol: str, start: str, end: str):
+    """Download daily close prices and return df indexed by date (python date)."""
+    try:
+        df = yf.download(symbol, start=start, end=end, progress=False)
+    except Exception as e:
+        print(f"ERROR downloading {symbol}: {e}")
+        return None
+    if df is None or df.empty:
+        print(f"WARNING: no data for {symbol}")
+        return None
+
+    # Normalize index to python date
+    df = df[["Close"]].copy()
+    df.reset_index(inplace=True)
+    # Column name could be 'Date' or something else depending on yfinance version
+    if "Date" not in df.columns:
+        # assume first column is the datetime
+        date_col = df.columns[0]
     else:
-        if "Close" not in prices.columns:
-            print(f"  WARNING: no Close in columns for {ticker} (cols={list(prices.columns)})")
-            return pd.DataFrame(columns=["date", "Close"])
-        close_series = prices["Close"]
-
-    idx = prices.index
-    date_values = pd.to_datetime(idx, errors="coerce").date
-
-    out = pd.DataFrame({
-        "date": date_values,
-        "Close": close_series.values,
-    })
-
-    out = (
-        out.dropna(subset=["date"])
-           .drop_duplicates(subset=["date"])
-           .sort_values("date")
-           .reset_index(drop=True)
-    )
-    return out
+        date_col = "Date"
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    df = df[[date_col, "Close"]].dropna()
+    df.set_index(date_col, inplace=True)
+    return df
 
 
-def label_block(block: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
-    """
-    For one ticker's headlines and its daily prices,
-    compute forward returns & labels for 1/3/7/10/20-day horizons.
-    """
-    horizons = [1, 3, 7, 10, 20]
-
-    if prices.empty:
-        for h in horizons:
-            block[f"ret_{h}d"] = np.nan
-            block[f"label_{h}d"] = np.nan
-        block["label_10d_bin"] = np.nan
-        return block
-
-    dates = prices["date"].values
-    close = prices["Close"].values
-
-    # Prepare containers
-    rets = {h: [] for h in horizons}
-    labs = {h: [] for h in horizons}
-
-    def last_trading_index_on_or_before(ts):
-        d = ts.date()
-        idx = np.searchsorted(dates, d, side="right")
-        j = idx - 1
-        if j < 0:
+def price_at(df, d):
+    """Return a SINGLE float price at or before date d."""
+    if d in df.index:
+        val = df.loc[d, "Close"]
+    else:
+        prev_idx = [x for x in df.index if x <= d]
+        if not prev_idx:
             return None
-        return j
+        val = df.loc[prev_idx[-1], "Close"]
 
-    def ret_and_label(j0, horizon):
-        j1 = j0 + horizon
-        if j1 >= len(close):
-            return np.nan, np.nan
-        p0 = close[j0]
-        p1 = close[j1]
-        if p0 == 0 or np.isnan(p0) or np.isnan(p1):
-            return np.nan, np.nan
-        r = (p1 - p0) / p0
-        # label: +1 if > +1%, -1 if < -1%, else 0
-        if r > 0.01:
-            lbl = 1
-        elif r < -0.01:
-            lbl = -1
-        else:
-            lbl = 0
-        return r, lbl
+    # If val is a series (duplicates), take the last
+    if isinstance(val, pd.Series):
+        return float(val.iloc[-1])
+    return float(val)
 
-    for ts in block["published_utc"]:
-        j0 = last_trading_index_on_or_before(ts)
-        if j0 is None:
-            for h in horizons:
-                rets[h].append(np.nan)
-                labs[h].append(np.nan)
-            continue
 
-        for h in horizons:
-            r, lbl = ret_and_label(j0, h)
-            rets[h].append(r)
-            labs[h].append(lbl)
-
-    for h in horizons:
-        block[f"ret_{h}d"] = rets[h]
-        block[f"label_{h}d"] = labs[h]
-
-    # Binary 10-day label: 1 if > +2%, else 0
-    ret_10 = block["ret_10d"]
-    block["label_10d_bin"] = np.where(ret_10 > 0.02, 1, 0)
-    block.loc[ret_10.isna(), "label_10d_bin"] = np.nan
-
-    return block
-
+# ------------- Main -------------
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--indir", required=True, help="Directory with per-ticker Finnhub CSVs")
-    ap.add_argument("--outfile", default="news_labeled_alpha.csv", help="Output labeled CSV")
-    args = ap.parse_args()
+    indir = "data/news_alpha"
+    outfile = "news_labeled_alpha_sector_neutral.csv"
 
-    indir = args.indir
-    out_csv = args.outfile
-
-    files = [f for f in os.listdir(indir) if f.lower().endswith(".csv")]
+    files = [os.path.join(indir, f) for f in os.listdir(indir) if f.endswith(".csv")]
     if not files:
-        raise SystemExit(f"No CSVs found in {indir}")
+        raise SystemExit(f"No CSV files found in {indir}")
 
-    print(f"Scanning {len(files)} ticker files from {indir}")
+    today_str = datetime.today().strftime("%Y-%m-%d")
 
-    blocks = []
-    for i, fname in enumerate(files, 1):
-        path = os.path.join(indir, fname)
-
-        # Skip truly empty files (0 bytes)
-        if os.path.getsize(path) == 0:
-            print(f"[{i}/{len(files)}] {fname} is 0 bytes, skip")
+    # Pre-download sector ETF prices
+    sector_universe = sorted(set(SECTOR_MAP.values()) | {DEFAULT_SECTOR})
+    print("Downloading sector ETFs:", sector_universe)
+    sector_prices = {}
+    for etf in sector_universe:
+        df = safe_download(etf, "2018-01-01", today_str)
+        if df is None:
             continue
+        sector_prices[etf] = df
 
+    all_rows = []
+
+    print("Processing", len(files), "news files...")
+    for i, path in enumerate(files, 1):
         try:
             df = pd.read_csv(path)
-        except pd.errors.EmptyDataError:
-            print(f"[{i}/{len(files)}] {fname} has no columns / invalid CSV, skip")
+        except Exception as e:
+            print(f"[{i}/{len(files)}] ERROR reading {path}: {e}")
             continue
 
         if df.empty:
-            print(f"[{i}/{len(files)}] {fname} has no rows, skip")
+            print(f"[{i}/{len(files)}] {path} empty, skip")
             continue
 
-        required = {"ticker", "published_utc", "title", "publisher", "url"}
-        missing = required - set(df.columns)
-        if missing:
-            print(f"[{i}/{len(files)}] {fname} missing columns {missing}, skip")
+        if "ticker" not in df.columns or "published_utc" not in df.columns:
+            print(f"[{i}/{len(files)}] {path} missing required columns, skip")
             continue
 
-        t = str(df["ticker"].iloc[0]).upper()
-        df["ticker"] = t
-        df["published_utc"] = pd.to_datetime(df["published_utc"], utc=True, errors="coerce")
+        ticker = str(df["ticker"].iloc[0]).upper()
+        sector = SECTOR_MAP.get(ticker, DEFAULT_SECTOR)
+
+        # price history for ticker
+        p = safe_download(ticker, "2018-01-01", today_str)
+        if p is None:
+            print(f"[{i}/{len(files)}] {ticker}: no price data, skip")
+            continue
+
+        sec_df = sector_prices.get(sector)
+        if sec_df is None:
+            sec_df = sector_prices.get(DEFAULT_SECTOR)
+            if sec_df is None:
+                print(f"[{i}/{len(files)}] No sector/SPY data available, skip {ticker}")
+                continue
+
+        df["published_utc"] = pd.to_datetime(df["published_utc"], errors="coerce", utc=True)
         df = df.dropna(subset=["published_utc"])
         if df.empty:
-            print(f"[{i}/{len(files)}] {t} no valid timestamps, skip")
+            print(f"[{i}/{len(files)}] {ticker}: no valid timestamps, skip")
             continue
 
-        min_ts = df["published_utc"].min()
-        max_ts = df["published_utc"].max()
+        print(f"[{i}/{len(files)}] {ticker}: headlines={len(df)}")
 
-        start_date = (min_ts - pd.Timedelta(days=10)).date()
-        end_date = (max_ts + pd.Timedelta(days=25)).date()
+        for _, row in df.iterrows():
+            ts_dt = row["published_utc"]
+            if pd.isna(ts_dt):
+                continue
+            ts = ts_dt.date()  # python date
 
-        print(f"\n[{i}/{len(files)}] {t}: headlines={len(df)}, price range {start_date} → {end_date}")
-        prices = fetch_daily_prices(t, start_date, end_date)
-        df = df.sort_values("published_utc").reset_index(drop=True)
-        df = label_block(df, prices)
-        blocks.append(df)
+            # find nearest trading date on or before ts
+            p0 = price_at(p, ts)
+            if p0 is None:
+                continue
 
-    if not blocks:
-        raise SystemExit("No labeled data produced. Check your input files / tickers.")
+            d10 = ts + timedelta(days=10)
+            d20 = ts + timedelta(days=20)
 
-    out = pd.concat(blocks, ignore_index=True)
-    out = out.sort_values(["ticker", "published_utc"]).reset_index(drop=True)
+            p10 = price_at(p, d10)
+            p20 = price_at(p, d20)
+            if p10 is None or p20 is None:
+                continue
 
-    # Drop rows where 10d label is nan (no future prices)
-    out = out.dropna(subset=["label_10d_bin"])
-    out.to_csv(out_csv, index=False)
+            s0 = price_at(sec_df, ts)
+            s10 = price_at(sec_df, d10)
+            s20 = price_at(sec_df, d20)
+            if s0 is None or s10 is None or s20 is None:
+                continue
 
-    print(f"\nSaved labeled dataset → {out_csv} (rows: {len(out)})")
+            ret10 = (p10 - p0) / p0
+            ret20 = (p20 - p0) / p0
+            sect10 = (s10 - s0) / s0
+            sect20 = (s20 - s0) / s0
+
+            alpha10 = ret10 - sect10
+            alpha20 = ret20 - sect20
+
+            label_10d_bin = int(float(alpha10) > 0)
+            label_20d_bin = int(float(alpha20) > 0)
+
+
+            all_rows.append({
+                "ticker": ticker,
+                "published_utc": row["published_utc"],
+                "title": row.get("title", ""),
+                "publisher": row.get("publisher", ""),
+                "url": row.get("url", ""),
+                "ret_10d": ret10,
+                "ret_20d": ret20,
+                "sect_10d": sect10,
+                "sect_20d": sect20,
+                "alpha_10d": alpha10,
+                "alpha_20d": alpha20,
+                "label_10d_bin": label_10d_bin,
+                "label_20d_bin": label_20d_bin,
+            })
+
+    final = pd.DataFrame(all_rows)
+    if final.empty:
+        raise SystemExit("No labeled rows produced. Check data and mappings.")
+
+    final.to_csv(outfile, index=False)
+    print(f"Saved sector-neutral dataset → {outfile} (rows: {len(final)})")
     print("Label distribution (10d binary):")
-    print(out["label_10d_bin"].value_counts(dropna=False))
-
+    print(final["label_10d_bin"].value_counts())
+    
 
 if __name__ == "__main__":
     main()

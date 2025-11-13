@@ -5,8 +5,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-IN_CSV = "news_labeled.csv"
-OUT_CSV = "news_with_insiders.csv"
+IN_CSV = "news_labeled_alpha_sector_neutral.csv"
+OUT_CSV = "news_with_insiders_sector_neutral.csv"
 
 # === CONFIG ===
 FINNHUB_KEY = os.getenv("FINNHUB_TOKEN") or "YOUR_API_KEY_HERE"  # <-- put your key here if not using env var

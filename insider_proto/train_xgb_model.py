@@ -18,7 +18,7 @@ from xgboost import XGBClassifier
 FRICTION = 0.0035   # 0.35% costs
 TOP_K = 0.20        # top decile
 
-IN_CSV = "news_with_insiders.csv"
+IN_CSV = "news_with_insiders_sector_neutral.csv"
 
 # ==================== Load =====================
 
