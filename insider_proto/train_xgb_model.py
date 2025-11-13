@@ -1,8 +1,8 @@
 # train_xgb_model.py
 #
 # XGBoost model on 10-day binary label:
-# - Input: news_with_insiders.csv (from add_insider_features.py)
-# - Target: label_10d_bin (1 if ret_10d > +2%, else 0)
+# - Input: news_with_insiders_sector_neutral.csv (from add_insider_features.py)
+# - Target: label_10d_bin (1 if ret_10d > 0 vs sector)
 # - Features: TF-IDF(title) + keyword flags + publisher/time + insider features
 # - Split: time-based 80/20
 
@@ -14,10 +14,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import classification_report
 
 from xgboost import XGBClassifier
+import joblib
 
 FRICTION = 0.0035   # 0.35% costs
-TOP_K = 0.20        # top decile
-
+TOP_K = 0.10        # top decile
 IN_CSV = "news_with_insiders_sector_neutral.csv"
 
 # ==================== Load =====================
@@ -102,17 +102,16 @@ print("Structured feature columns:", structured_cols)
 
 # ==================== Text features =====================
 
-tfidf = TfidfVectorizer(
+vectorizer = TfidfVectorizer(
     max_features=5000,
     ngram_range=(1, 2),
     stop_words="english",
 )
 
-X_text = tfidf.fit_transform(df["title"].astype(str))
-X_struct = df[structured_cols].fillna(0).values
+X_text = vectorizer.fit_transform(df["title"].astype(str))
+X_struct = csr_matrix(df[structured_cols].fillna(0).values)
 
-X = hstack([X_text, X_struct])
-X = csr_matrix(X)
+X = hstack([X_text, X_struct]).tocsr()
 
 # ==================== Time-based split =====================
 
@@ -186,3 +185,11 @@ print(top_valid["ticker"].value_counts().head(15))
 pred_labels = (proba >= 0.5).astype(int)
 print("\nClassification report (10d binary):")
 print(classification_report(y_test, pred_labels))
+
+# ==================== Save artifacts =====================
+
+joblib.dump(model, "xgb_sector_neutral_v01.pkl")
+joblib.dump(vectorizer, "tfidf_sector_neutral_v01.pkl")
+joblib.dump(structured_cols, "struct_cols_v01.pkl")
+
+print("\nSaved model, vectorizer, and struct_cols.")

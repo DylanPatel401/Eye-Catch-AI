@@ -18,10 +18,12 @@ if FINNHUB_KEY == "YOUR_API_KEY_HERE":
 BASE_URL = "https://finnhub.io/api/v1/stock/insider-transactions"
 
 
-def fetch_insiders(ticker: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
+def fetch_insiders(ticker: str, start_date: datetime, end_date: datetime,
+                   retries: int = 3, timeout: int = 15) -> pd.DataFrame:
     """
     Fetch insider transactions for [start_date, end_date] from Finnhub.
-    Returns DataFrame with columns: date, name, change, value, type
+    Returns DataFrame with columns: date, name, change, value, type.
+    Robust to timeouts / connection errors: on repeated failure, returns empty DF.
     """
     params = {
         "symbol": ticker,
@@ -30,35 +32,58 @@ def fetch_insiders(ticker: str, start_date: datetime, end_date: datetime) -> pd.
         "token": FINNHUB_KEY,
     }
     print(f"  Finnhub insiders {ticker} {params['from']} → {params['to']}")
-    r = requests.get(BASE_URL, params=params, timeout=10)
-    if r.status_code != 200:
-        print(f"  WARNING: HTTP {r.status_code} for {ticker}: {r.text[:200]}")
-        return pd.DataFrame(columns=["date", "name", "change", "value", "type"])
 
-    data = r.json() or {}
-    if "data" not in data or not data["data"]:
-        print(f"  No insider data for {ticker}")
-        return pd.DataFrame(columns=["date", "name", "change", "value", "type"])
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(BASE_URL, params=params, timeout=timeout)
+            r.raise_for_status()
+            data = r.json() or {}
 
-    df_ins = pd.DataFrame(data["data"])
+            if "data" not in data or not data["data"]:
+                print(f"  No insider data for {ticker}")
+                return pd.DataFrame(columns=["date", "name", "change", "value", "type"])
 
-    # Normalize
-    for col in ["name", "change", "transactionPrice", "transactionType", "transactionDate"]:
-        if col not in df_ins.columns:
-            df_ins[col] = np.nan
+            df_ins = pd.DataFrame(data["data"])
 
-    df_ins["date"] = pd.to_datetime(df_ins["transactionDate"], errors="coerce").dt.date
-    df_ins = df_ins.dropna(subset=["date"])
-    df_ins["name"] = df_ins["name"].astype(str)
-    df_ins["change"] = pd.to_numeric(df_ins["change"], errors="coerce")
-    df_ins["transactionPrice"] = pd.to_numeric(df_ins["transactionPrice"], errors="coerce")
+            # Normalize expected columns
+            for col in ["name", "change", "transactionPrice", "transactionType", "transactionDate"]:
+                if col not in df_ins.columns:
+                    df_ins[col] = np.nan
 
-    df_ins["value"] = df_ins["change"] * df_ins["transactionPrice"]
+            df_ins["date"] = pd.to_datetime(df_ins["transactionDate"], errors="coerce").dt.date
+            df_ins = df_ins.dropna(subset=["date"])
+            if df_ins.empty:
+                print(f"  Insider data empty after cleaning for {ticker}")
+                return pd.DataFrame(columns=["date", "name", "change", "value", "type"])
 
-    df_ins["type"] = df_ins["transactionType"].astype(str)
+            df_ins["name"] = df_ins["name"].astype(str)
+            df_ins["change"] = pd.to_numeric(df_ins["change"], errors="coerce")
+            df_ins["transactionPrice"] = pd.to_numeric(df_ins["transactionPrice"], errors="coerce")
 
-    df_ins = df_ins[["date", "name", "change", "value", "type"]].sort_values("date").reset_index(drop=True)
-    return df_ins
+            df_ins["value"] = df_ins["change"] * df_ins["transactionPrice"]
+            df_ins["type"] = df_ins["transactionType"].astype(str)
+
+            df_ins = df_ins[["date", "name", "change", "value", "type"]].sort_values("date").reset_index(drop=True)
+            return df_ins
+
+        except (requests.exceptions.ReadTimeout,
+                requests.exceptions.ConnectionError) as e:
+            last_error = e
+            print(f"  WARNING: timeout/conn error for {ticker} (attempt {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(2 * attempt)
+            else:
+                print(f"  SKIP insiders for {ticker} after {retries} failed attempts.")
+                return pd.DataFrame(columns=["date", "name", "change", "value", "type"])
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            print(f"  WARNING: HTTP error for {ticker}: {e}")
+            return pd.DataFrame(columns=["date", "name", "change", "value", "type"])
+
+    # Fallback (shouldn’t really hit)
+    print(f"  SKIP insiders for {ticker} due to repeated errors: {last_error}")
+    return pd.DataFrame(columns=["date", "name", "change", "value", "type"])
 
 
 def add_insider_features_for_ticker(block: pd.DataFrame, insiders: pd.DataFrame) -> pd.DataFrame:
@@ -147,7 +172,7 @@ def main():
 
     blocks = []
     for i, t in enumerate(tickers, 1):
-        time.sleep(3)
+        time.sleep(3)  # spread out requests a bit
         block = df[df["ticker"] == t].copy().reset_index(drop=True)
         if block.empty:
             continue
@@ -160,7 +185,7 @@ def main():
 
         print(f"\n[{i}/{len(tickers)}] {t}: headlines={len(block)}, insider range {start_date.date()} → {end_date.date()}")
         insiders = fetch_insiders(t, start_date, end_date)
-        time.sleep(0.25)  # rate limit buffer
+        time.sleep(0.25)  # small buffer between calls
 
         block = add_insider_features_for_ticker(block, insiders)
         blocks.append(block)
