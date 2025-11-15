@@ -1,0 +1,6 @@
+ticker,title,publisher,published_utc,event_type,prob_up_10d
+PLTR,Palantir wins billion-dollar analytics contract with US government agency,Yahoo Finance,2025-11-13T20:53:00Z,contract_major,0.54298306
+AZO,Goldman Sachs upgrades AutoZone to Buy,Yahoo Finance,2025-11-13T15:45:00Z,other,0.53418237
+LMT,Lockheed Martin awarded $233 million contract for IRST Block II systems,Lockheed Martin,2025-10-20T14:00:00Z,contract_win,0.49813592
+COIN,Coinbase hit with securities regulator lawsuit over token listings,Reuters,2025-11-13T13:00:00Z,legal_risk,0.48992616
+AVGO,Broadcom signs multiyear AI infrastructure deal with major cloud provider,TechCrunch,2025-11-13T13:00:00Z,other,0.47241
