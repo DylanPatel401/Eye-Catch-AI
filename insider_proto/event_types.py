@@ -2,8 +2,10 @@
 #
 # Rule-based event classifier for headlines.
 # Maps a news title to one of a small set of event_type strings.
-# This version is stricter and tries to avoid over-tagging everything
-# as "contract_win" / "other".
+# This version is stricter, but with extra patterns to catch:
+# - "raises Q1 revenue outlook above estimates"  -> earnings_beat
+# - "purchases several million dollars of shares" -> insider_buy
+# - "contract with US government" -> contract_win
 
 from typing import Optional
 
@@ -128,7 +130,7 @@ def classify_event(title: Optional[str]) -> str:
     ]):
         return "earnings_miss_or_cut"
 
-    # Analyst downgrade (keep separate from other negatives)
+    # Analyst downgrade
     if _contains_any(t, [
         "downgrade to",
         "downgraded to",
@@ -197,10 +199,11 @@ def classify_event(title: Optional[str]) -> str:
         "earnings beat",
         "smashes estimates",
         "surpasses estimates",
+        "above estimates",   # <-- added to catch "outlook above estimates"
     ]):
         return "earnings_beat"
 
-    # Guidance raise (separate from beat)
+    # Guidance raise
     if _contains_any(t, [
         "raises guidance",
         "hikes guidance",
@@ -212,6 +215,8 @@ def classify_event(title: Optional[str]) -> str:
         "boosts forecast",
         "lifts forecast",
         "increases forecast",
+        "raises revenue outlook",      # looser phrase
+        "raises q1 revenue outlook",   # your Micron-style example
     ]):
         return "guidance_raise"
 
@@ -229,7 +234,7 @@ def classify_event(title: Optional[str]) -> str:
     ]):
         return "buyback"
 
-    # Analyst upgrades (positive side)
+    # Analyst upgrades
     if _contains_any(t, [
         "upgrade to buy",
         "upgraded to buy",
@@ -248,7 +253,7 @@ def classify_event(title: Optional[str]) -> str:
     ]):
         return "analyst_upgrade"
 
-    # Insider activity
+    # Insider activity (broadened)
     if _contains_any(t, [
         "insider buys",
         "insider purchase",
@@ -258,6 +263,8 @@ def classify_event(title: Optional[str]) -> str:
         "buys stock",
         "buys shares",
         "purchases shares",
+        "purchases stock",
+        "purchases several million dollars of shares",
         "acquires shares",
         "buys more shares",
     ]):
@@ -276,25 +283,30 @@ def classify_event(title: Optional[str]) -> str:
     ]):
         return "insider_sell"
 
-    # Contract wins — but **ONLY** when clearly "won/awarded/secured"
+    # Contract wins — now also pick up "contract with ..."
     if (
         "contract" in t or "order" in t or "tender" in t
-    ) and _contains_any(t, [
-        "wins ",
-        "win ",
-        "awarded",
-        "secures",
-        "secured",
-        "lands",
-        "books",
-        "receives order",
-        "receives contract",
-        "selected by",
-        "chosen by",
-        "inked",
-        "signs multi-year",
-        "signed multi-year",
-    ]):
+    ) and (
+        _contains_any(t, [
+            "wins ",
+            " win ",
+            "awarded",
+            "secures",
+            "secured",
+            "lands",
+            "books",
+            "receives order",
+            "receives contract",
+            "selected by",
+            "chosen by",
+            "inked",
+            "signs multi-year",
+            "signed multi-year",
+        ])
+        or "contract with" in t      # <-- added for "contract with US government"
+        or "contract to" in t
+        or "contract for" in t
+    ):
         return "contract_win"
 
     # Partnership / strategic alliance
@@ -353,3 +365,5 @@ def classify_event(title: Optional[str]) -> str:
     # =========================
 
     return "other"
+
+
