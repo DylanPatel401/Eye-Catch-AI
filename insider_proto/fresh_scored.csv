@@ -1,13 +1,13 @@
 ticker,title,publisher,published_utc,event_type,prob_up_10d
 GE,GE Aerospace announces multibillion engine order from major airline,Reuters,2025-11-13T13:00:00Z,other,0.63213354
 PANW,Palo Alto Networks shares slip after downgrade to underperform,Barrons,2025-11-13T13:00:00Z,analyst_downgrade,0.6290848
-NVDA,Nvidia announces 10B AI superchip contract with US government,Reuters,2025-11-13T13:00:00Z,contract_win,0.6137268
-MU,Micron raises Q1 revenue outlook above estimates,YahooFinance,2025-11-13T13:00:00Z,earnings_beat,0.60667574
-MU,Micron director purchases several million dollars of shares,SecFiling,2025-11-13T13:00:00Z,insider_buy,0.60667574
+NVDA,Nvidia announces 10B AI superchip contract with US government,Reuters,2025-11-13T13:00:00Z,other,0.6137268
+MU,Micron raises Q1 revenue outlook above estimates,YahooFinance,2025-11-13T13:00:00Z,other,0.60667574
+MU,Micron director purchases several million dollars of shares,SecFiling,2025-11-13T13:00:00Z,other,0.60667574
 ENPH,Enphase secures major European solar deployment project,SolarDaily,2025-11-13T13:00:00Z,other,0.6049085
 NVDA,Nvidia faces new export restrictions on AI chips to China,Reuters,2025-11-13T13:00:00Z,other,0.5835546
-LMT,Lockheed Martin receives large defense contract for missile systems,DefenseNews,2025-11-13T13:00:00Z,contract_win,0.54959357
-PLTR,Palantir wins billion dollar analytics contract with US Army,YahooFinance,2025-11-13T13:00:00Z,contract_win,0.54298306
+LMT,Lockheed Martin receives large defense contract for missile systems,DefenseNews,2025-11-13T13:00:00Z,other,0.54959357
+PLTR,Palantir wins billion dollar analytics contract with US Army,YahooFinance,2025-11-13T13:00:00Z,contract_major,0.54298306
 AAPL,Apple secures long term supply deal for key display components,Bloomberg,2025-11-13T13:00:00Z,other,0.49722812
 MSFT,Microsoft in talks to buy data platform company for large sum,Bloomberg,2025-11-13T13:00:00Z,other,0.49583554
 CRM,Salesforce beats earnings and raises full year guidance,BusinessWire,2025-11-13T13:00:00Z,other,0.49174327

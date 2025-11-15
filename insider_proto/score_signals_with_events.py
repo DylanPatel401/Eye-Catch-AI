@@ -1,175 +1,226 @@
 # score_signals_with_events.py
 #
-# Module 4: Full signal scoring engine.
-#
-# Takes:
-#   - Input: CSV from predict.py with at least:
-#       ticker, title, publisher, published_utc, event_type, prob_up_10d
-#   - Event stats: event_type_stats_train.csv from event_backtest.py
-#
-# Produces:
-#   - Same rows +:
-#       base_prob        (historical hit-rate for this event type)
-#       win_edge         (model_prob - base_prob)
-#       event_edge       (avg sector-neutral 10d alpha for this event)
-#       conf_weight      (how statistically reliable this event type is)
-#       signal_score     (final composite signal)
-#       reason           (human-readable explanation)
-#       tier             (A/B/C/D)
+# Take fresh scored signals (from predict.py with prob_up_10d + event_type)
+# and combine:
+#   - model probability
+#   - event-type backtest stats (avg_10d, hit_rate_10d, count)
+#   - publisher quality
+# into a unified signal_score + tier (A/B/C).
 #
 # Usage:
 #   (.venv) python score_signals_with_events.py \
 #       --input fresh_scored.csv \
-#       --output ranked_signals.csv
+#       --output ranked_signals.csv \
+#       --top 0.3
 
 import argparse
 import numpy as np
 import pandas as pd
 
 
-EVENT_STATS_CSV = "event_type_stats_train.csv"
+EVENT_STATS_CSV = "event_type_stats_train.csv"   # from event_backtest.py
 
 
-def load_event_stats(path: str) -> pd.DataFrame:
-    """Load per-event stats and compute global baseline."""
-    stats = pd.read_csv(path)
+# ---------- Publisher quality weighting ----------
 
-    required = {"event_type", "count", "avg_10d", "hit_rate_10d"}
-    missing = required - set(stats.columns)
-    if missing:
-        raise SystemExit(f"Missing columns in {path}: {missing}")
+def publisher_weight(publisher: str) -> float:
+    """Heuristic quality score per publisher."""
+    if not isinstance(publisher, str):
+        return 1.0
 
-    # Clean
-    stats["count"] = stats["count"].fillna(0).astype(float)
-    stats["avg_10d"] = stats["avg_10d"].fillna(0.0).astype(float)
-    stats["hit_rate_10d"] = stats["hit_rate_10d"].fillna(0.0).astype(float)
+    p = publisher.lower()
 
-    # Global baseline = count-weighted hit-rate
+    tier1 = ["reuters", "bloomberg", "wall street journal", "wsj",
+             "financial times", "ft.com", "associated press", "ap news"]
+    tier2 = ["cnbc", "marketwatch", "yahoo finance", "investor's business daily",
+             "ibd", "dow jones", "the motley fool"]
+
+    if any(k in p for k in tier1):
+        return 1.10
+    if any(k in p for k in tier2):
+        return 1.05
+    if "seekingalpha" in p:
+        return 0.98
+    return 1.0
+
+
+# ---------- Scoring logic ----------
+
+def compute_signal_scores(df: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge event-type stats and compute:
+      - base_prob (event hit rate)
+      - win_edge (model_prob - base_prob)
+      - event_edge (avg_10d)
+      - conf_weight (log-scaled by count)
+      - publisher_weight
+      - model_component & event_component
+      - signal_score_raw & normalized signal_score
+      - tier (A/B/C)
+    """
+
+    # Build lookup from stats
+    # stats columns expected: event_type, count, avg_10d, hit_rate_10d
+    stats = stats.copy()
+    stats["event_type"] = stats["event_type"].astype(str)
+
+    # Global fallback base probability (weighted by count)
     total_count = stats["count"].sum()
-    if total_count <= 0:
-        global_hit = stats["hit_rate_10d"].mean()
+    if total_count > 0:
+        global_base_prob = (stats["hit_rate_10d"] * stats["count"]).sum() / total_count
     else:
-        global_hit = (stats["hit_rate_10d"] * stats["count"]).sum() / total_count
+        global_base_prob = 0.5
 
-    return stats, float(global_hit)
-
-
-def compute_signal_scores(df_in: pd.DataFrame,
-                          stats: pd.DataFrame,
-                          global_hit: float) -> pd.DataFrame:
-    """
-    Join model outputs with historical event stats and compute:
-      base_prob, win_edge, event_edge, conf_weight, signal_score, reason, tier.
-    """
-
-    if "event_type" not in df_in.columns:
-        raise SystemExit("Input must contain 'event_type' column. Run predict.py (with event_type) first.")
-    if "prob_up_10d" not in df_in.columns:
-        raise SystemExit("Input must contain 'prob_up_10d' column from model scoring.")
-
-    # Merge on event_type
-    stats_small = stats[["event_type", "count", "avg_10d", "hit_rate_10d"]].copy()
-    df = df_in.merge(stats_small, on="event_type", how="left")
-
-    # Fill missing stats with global baseline
-    df["count"] = df["count"].fillna(0.0)
-    df["avg_10d"] = df["avg_10d"].fillna(0.0)
-    df["hit_rate_10d"] = df["hit_rate_10d"].fillna(global_hit)
-
-    # Base probability = historical hit-rate for this event type
-    df["base_prob"] = df["hit_rate_10d"].astype(float)
-
-    # Edges
-    df["prob_up_10d"] = df["prob_up_10d"].astype(float)
-    df["win_edge"] = df["prob_up_10d"] - df["base_prob"]          # model vs. historical
-    df["event_edge"] = df["avg_10d"].astype(float)                # avg sector-neutral 10d alpha
-
-    # Confidence weight based on sample size of this event type
-    # log10(count+1)/2 clipped to [0.1, 1.0]
-    conf = np.log10(df["count"] + 1.0) / 2.0
-    df["conf_weight"] = conf.clip(lower=0.1, upper=1.0)
-
-    # Composite raw score:
-    # - 55% model probability
-    # - 30% uplift vs. baseline (win_edge)
-    # - 15% scaled event-level alpha
-    df["signal_score_raw"] = (
-        0.55 * df["prob_up_10d"]
-        + 0.30 * df["win_edge"]
-        + 0.15 * (df["event_edge"] * 10.0)   # 1% alpha ≈ 0.1 contribution
+    # Merge by event_type
+    df = df.copy()
+    df["event_type"] = df["event_type"].astype(str)
+    df = df.merge(
+        stats[["event_type", "count", "avg_10d", "hit_rate_10d"]],
+        on="event_type",
+        how="left",
+        suffixes=("", "_evt")
     )
 
-    # Final score = raw_score * confidence
-    df["signal_score"] = df["signal_score_raw"] * df["conf_weight"]
+    # Fill missing stats with "global baseline"
+    df["count"] = df["count"].fillna(0)
+    df["avg_10d"] = df["avg_10d"].fillna(0.0)
+    df["hit_rate_10d"] = df["hit_rate_10d"].fillna(global_base_prob)
 
-    # Reason string
-    def make_reason(row):
+
+
+    # --- Handcrafted priors for sparse but obviously strong/weak events ---
+    strong_priors = {
+        "contract_major":  {"base_prob": 0.60, "avg_10d": 0.015, "min_count": 300},
+        "regulatory_approval": {"base_prob": 0.55, "avg_10d": 0.012, "min_count": 200},
+    }
+    weak_priors = {
+        "legal_risk": {"base_prob": 0.45, "avg_10d": 0.000, "min_count": 200},
+    }
+
+    for evt, cfg in strong_priors.items():
+        mask = (df["event_type"] == evt) & (df["count"] < cfg["min_count"])
+        df.loc[mask, "base_prob"] = cfg["base_prob"]
+        df.loc[mask, "avg_10d"] = cfg["avg_10d"]
+        df.loc[mask, "count"] = cfg["min_count"]
+
+    for evt, cfg in weak_priors.items():
+        mask = (df["event_type"] == evt) & (df["count"] < cfg["min_count"])
+        df.loc[mask, "base_prob"] = cfg["base_prob"]
+        df.loc[mask, "avg_10d"] = cfg["avg_10d"]
+        df.loc[mask, "count"] = cfg["min_count"]
+
+
+
+
+    # Base probability is event-type hit rate
+    df["base_prob"] = df["hit_rate_10d"]
+
+    # Win edge: how much higher the model is than historical hit rate
+    df["win_edge"] = df["prob_up_10d"] - df["base_prob"]
+
+    # Event edge: actual average 10d alpha from backtest
+    df["event_edge"] = df["avg_10d"]
+
+    # Confidence weight: small samples -> low weight, big buckets -> ~1
+    # Using log scaling with cap at 1.0
+    def _conf(c):
+        c = max(float(c), 0.0)
+        if c <= 0:
+            return 0.0
+        return min(1.0, np.log(c + 1.0) / np.log(5000.0))
+
+    df["conf_weight"] = df["count"].apply(_conf)
+
+    # Publisher quality
+    df["pub_weight"] = df["publisher"].apply(publisher_weight)
+
+    # Model component:
+    #   - relative to 0.5 (neutral)
+    #   - amplified or dampened by publisher quality
+    df["model_component"] = (df["prob_up_10d"] - 0.5) * df["pub_weight"]
+
+    # Event component:
+    #   - win_edge scaled by confidence
+    #   - plus the raw avg_10d (alpha) so that truly strong events get a bump
+    df["event_component"] = df["win_edge"] * df["conf_weight"] + df["event_edge"]
+
+    # Combine into a raw score
+    # Heavier weight on model (0.6) vs event context (0.4)
+    df["signal_score_raw"] = 0.6 * df["model_component"] + 0.4 * df["event_component"]
+
+    # Normalize to 0–1 range for easier interpretation
+    min_s = df["signal_score_raw"].min()
+    max_s = df["signal_score_raw"].max()
+    if max_s > min_s:
+        df["signal_score"] = (df["signal_score_raw"] - min_s) / (max_s - min_s)
+    else:
+        df["signal_score"] = 0.5
+
+    # Tiering: A / B / C based on normalized score
+    def _tier(s):
+        if s >= 0.75:
+            return "A"
+        if s >= 0.45:
+            return "B"
+        return "C"
+
+
+    df["tier"] = df["signal_score"].apply(_tier)
+
+    # Reason string for UI / debugging
+    def _reason(row):
         return (
             f"event={row['event_type']} | "
             f"hist_10d={row['avg_10d']:.2%} | "
-            f"hit={row['hit_rate_10d']:.0%} | "
-            f"model_prob={row['prob_up_10d']:.1%}"
+            f"hit={row['base_prob']:.0%} | "
+            f"model_prob={row['prob_up_10d']:.1%} | "
+            f"pub_w={row['pub_weight']:.2f}"
         )
 
-    df["reason"] = df.apply(make_reason, axis=1)
-
-    # Tiering: percentile-based on signal_score + hard guards on prob/edge/conf
-    scores = df["signal_score"].fillna(df["signal_score"].min())
-    q90, q75, q50 = np.quantile(scores, [0.90, 0.75, 0.50])
-
-    def assign_tier(row):
-        s = row["signal_score"]
-        p = row["prob_up_10d"]
-        w = row["win_edge"]
-        c = row["conf_weight"]
-
-        if s >= q90 and p >= 0.60 and w >= 0.05 and c >= 0.5:
-            return "A"
-        elif s >= q75 and p >= 0.55 and w >= 0.02:
-            return "B"
-        elif s >= q50:
-            return "C"
-        else:
-            return "D"
-
-    df["tier"] = df.apply(assign_tier, axis=1)
-
-    # Sort strongest first
-    df = df.sort_values("signal_score", ascending=False).reset_index(drop=True)
+    df["reason"] = df.apply(_reason, axis=1)
 
     return df
 
 
+# ---------- CLI ----------
+
 def main():
-    ap = argparse.ArgumentParser(description="Rank signals with event-aware scoring engine.")
-    ap.add_argument("--input", required=True,
-                    help="Input CSV from predict.py (must include event_type, prob_up_10d).")
-    ap.add_argument("--output", required=True,
-                    help="Output CSV with signal_score, tier, etc.")
-    ap.add_argument("--event-stats", default=EVENT_STATS_CSV,
-                    help=f"Event stats CSV (default: {EVENT_STATS_CSV}).")
-    ap.add_argument("--top", type=float, default=1.0,
-                    help="Fraction of rows to keep (0-1]. Default 1.0 (keep all).")
+    parser = argparse.ArgumentParser(description="Rank signals using event stats + publisher quality.")
+    parser.add_argument("--input", required=True, help="Input CSV (from predict.py with prob_up_10d + event_type).")
+    parser.add_argument("--output", required=True, help="Output CSV with scores + tiers.")
+    parser.add_argument(
+        "--top",
+        type=float,
+        default=1.0,
+        help="Fraction of top rows to keep (0-1]. Default 1.0 = keep all.",
+    )
 
-    args = ap.parse_args()
+    args = parser.parse_args()
 
-    print(f"Loading event stats from {args.event_stats} …")
-    stats, global_hit = load_event_stats(args.event_stats)
-    print(f"Global baseline hit-rate (10d up): {global_hit:.3%}")
+    print(f"Loading input: {args.input}")
+    df = pd.read_csv(args.input)
 
-    print(f"Reading input: {args.input}")
-    df_in = pd.read_csv(args.input)
+    if "prob_up_10d" not in df.columns:
+        raise SystemExit("Input must contain 'prob_up_10d' column.")
+    if "event_type" not in df.columns:
+        raise SystemExit("Input must contain 'event_type' column (or add via classify_event before).")
 
-    scored = compute_signal_scores(df_in, stats, global_hit)
+    print(f"Loading event stats: {EVENT_STATS_CSV}")
+    stats = pd.read_csv(EVENT_STATS_CSV)
 
-    # Optional filter to top fraction
+    df_scored = compute_signal_scores(df, stats)
+
+    # Sort by signal score desc
+    df_scored = df_scored.sort_values("signal_score", ascending=False).reset_index(drop=True)
+
+    # Optionally keep only top fraction
     if 0 < args.top < 1.0:
-        k = max(1, int(len(scored) * args.top))
-        scored = scored.iloc[:k].copy()
+        k = max(1, int(len(df_scored) * args.top))
+        df_scored = df_scored.iloc[:k].copy()
         print(f"Keeping top {args.top:.0%} → {k} rows.")
 
     print(f"Writing ranked signals → {args.output}")
-    scored.to_csv(args.output, index=False)
+    df_scored.to_csv(args.output, index=False)
     print("Done.")
 
 
