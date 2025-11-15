@@ -217,9 +217,7 @@ def main():
     if 0 < args.top < 1.0:
         k = max(1, int(len(df_scored) * args.top))
         df_scored = df_scored.iloc[:k].copy()
-        print(f"Keeping top {args.top:.0%} → {k} rows.")
 
-    print(f"Writing ranked signals → {args.output}")
     df_scored.to_csv(args.output, index=False)
     print("Done.")
 

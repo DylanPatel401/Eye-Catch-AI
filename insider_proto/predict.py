@@ -150,7 +150,7 @@ def main():
         df_out = df_out.iloc[:k].copy()
         print(f"Keeping top {args.top:.0%} → {k} rows.")
 
-    print(f"Writing scored output → {args.output}")
+    print(f"Writing scored output -> {args.output}")
     df_out.to_csv(args.output, index=False)
     print("Done.")
 
