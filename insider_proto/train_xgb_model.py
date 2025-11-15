@@ -15,6 +15,7 @@ from sklearn.metrics import classification_report
 
 from xgboost import XGBClassifier
 import joblib
+from event_types import classify_event
 
 FRICTION = 0.0035   # 0.35% costs
 TOP_K = 0.10        # top decile
@@ -43,6 +44,15 @@ print(df["label_10d_bin"].value_counts(dropna=False))
 
 # Sort by time for time-based split
 df = df.sort_values("published_utc").reset_index(drop=True)
+
+# ==================== Event categorization (Module 1) =====================
+
+df["event_type"] = df["title"].astype(str).apply(classify_event)
+
+print("Event type distribution (top 15):")
+print(df["event_type"].value_counts().head(15))
+
+
 
 # ==================== Feature engineering =====================
 
